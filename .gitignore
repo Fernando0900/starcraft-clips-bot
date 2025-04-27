@@ -1,0 +1,6 @@
+.env
+user_clips.json
+__pycache__/
+*.pyc
+*.secret
+*.key
