@@ -6,7 +6,7 @@ import logging
 from discord.ext import commands
 from dotenv import load_dotenv
 
-# Configuración mejorada de logging
+# Configuración avanzada de logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -14,69 +14,61 @@ logging.basicConfig(
 )
 logger = logging.getLogger('starcraft_bot')
 
-# Carga las variables de entorno
+# Carga de variables de entorno
 load_dotenv()
 
-# Validación de variables de entorno
-required_vars = {
-    'DISCORD_TOKEN': 'Token de Discord',
-    'CANAL_CLIPS_ID': 'ID del canal de clips'
-}
+# Validación de configuración
+TOKEN = os.getenv('DISCORD_TOKEN')
+CANAL_CLIPS_ID = int(os.getenv('CANAL_CLIPS_ID', 0))
 
-for var, desc in required_vars.items():
-    if not os.environ.get(var):
-        logger.error(f"Falta la variable requerida: {desc} ({var})")
-        exit(1)
+if not TOKEN:
+    logger.error("ERROR: Falta la variable DISCORD_TOKEN")
+    exit(1)
 
-TOKEN = os.environ['DISCORD_TOKEN']
-CANAL_CLIPS_ID = int(os.environ['CANAL_CLIPS_ID'])
+if not CANAL_CLIPS_ID:
+    logger.error("ERROR: Falta la variable CANAL_CLIPS_ID")
+    exit(1)
 
-# Configuración de intents
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-
-# Inicialización del bot
+# Configuración de intents (IMPORTANTE)
+intents = discord.Intents.all()
 bot = commands.Bot(
-    command_prefix='!',
+    command_prefix='!', 
     intents=intents,
-    help_command=None
+    help_command=None,
+    case_insensitive=True
 )
 
 # Manejo de datos
 DATA_FILE = os.path.join(os.path.dirname(__file__), 'user_clips.json')
 
 def cargar_datos():
-    """Carga los datos de usuarios desde el archivo JSON"""
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         return {}
-    except (json.JSONDecodeError, IOError) as e:
+    except Exception as e:
         logger.error(f"Error cargando datos: {str(e)}")
         return {}
 
 def guardar_datos():
-    """Guarda los datos de usuarios en el archivo JSON"""
     try:
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_clips, f, indent=2, ensure_ascii=False)
-    except IOError as e:
+    except Exception as e:
         logger.error(f"Error guardando datos: {str(e)}")
 
 user_clips = cargar_datos()
 
 # Funciones utilitarias
 def es_replay_sc2(message):
-    """Verifica si el mensaje contiene un archivo .SC2Replay"""
     return any(
         attachment.filename.lower().endswith('.sc2replay')
         for attachment in message.attachments
     )
 
-async def enviar_respuesta_privada(ctx, titulo, descripcion, color):
-    """Envía un mensaje embed al usuario"""
+async def enviar_respuesta(ctx, titulo, descripcion, color):
+    """Envía mensajes embebidos con manejo de errores"""
     embed = discord.Embed(
         title=titulo,
         description=descripcion,
@@ -87,24 +79,32 @@ async def enviar_respuesta_privada(ctx, titulo, descripcion, color):
     
     try:
         await ctx.message.delete()
-    except (discord.Forbidden, discord.NotFound):
+    except:
         pass
     
     try:
         await ctx.author.send(embed=embed)
-    except discord.Forbidden:
-        await ctx.send(embed=embed, delete_after=15)
+    except:
+        try:
+            await ctx.send(embed=embed, delete_after=15)
+        except Exception as e:
+            logger.error(f"Error enviando mensaje: {str(e)}")
 
-# Eventos del bot
+# Eventos principales
 @bot.event
 async def on_ready():
-    """Evento cuando el bot se conecta exitosamente"""
-    logger.info(f'Conectado como {bot.user} (ID: {bot.user.id})')
+    """Evento cuando el bot se conecta"""
+    logger.info(f'✅ Bot conectado como: {bot.user}')
+    logger.info(f'📡 En {len(bot.guilds)} servidor(es)')
+    
+    for guild in bot.guilds:
+        logger.info(f' - {guild.name} (ID: {guild.id})')
+        
     await bot.change_presence(activity=discord.Game(name="!ayuda"))
 
 @bot.event
 async def on_message(message):
-    """Procesa todos los mensajes recibidos"""
+    """Manejador principal de mensajes"""
     if message.author.bot:
         return
 
@@ -118,10 +118,11 @@ async def on_message(message):
         await procesar_replay(message)
 
 async def procesar_replay(message):
-    """Procesa los mensajes con replays en el canal designado"""
+    """Procesa los archivos .SC2Replay"""
+    ctx = await bot.get_context(message)
+    
     if not es_replay_sc2(message):
-        ctx = await bot.get_context(message)
-        await enviar_respuesta_privada(
+        await enviar_respuesta(
             ctx,
             "❌ Archivo no válido",
             "Solo se permiten archivos .SC2Replay en este canal.",
@@ -137,11 +138,10 @@ async def procesar_replay(message):
         last_upload = datetime.datetime.fromisoformat(user_clips[user_id])
         dias_restantes = 30 - (now - last_upload).days
         if dias_restantes > 0:
-            ctx = await bot.get_context(message)
-            await enviar_respuesta_privada(
+            await enviar_respuesta(
                 ctx,
-                "⏳ Límite mensual alcanzado",
-                f"Ya has enviado un replay este mes. Podrás enviar otro en {dias_restantes} días.",
+                "⏳ Límite mensual",
+                f"Espera {dias_restantes} días para subir otro replay.",
                 discord.Color.orange()
             )
             await message.delete()
@@ -150,47 +150,48 @@ async def procesar_replay(message):
     # Registrar nuevo replay
     user_clips[user_id] = now.isoformat()
     guardar_datos()
-
-    ctx = await bot.get_context(message)
-    await enviar_respuesta_privada(
+    
+    await enviar_respuesta(
         ctx,
-        "✅ Replay recibido",
-        "Tu replay ha sido aceptado. Podrás enviar otro en 30 días.",
+        "✅ Replay aceptado",
+        "Archivo recibido correctamente. Podrás subir otro en 30 días.",
         discord.Color.green()
     )
 
-# Comandos del bot
+# Comandos principales
 @bot.command(name='ayuda')
 async def ayuda(ctx):
-    """Muestra información de ayuda"""
+    """Muestra la ayuda del bot"""
     embed = discord.Embed(
-        title="📜 Ayuda del Bot de Starcraft Clips",
+        title="📜 Ayuda del Bot",
         description="Comandos disponibles:",
         color=discord.Color.blue()
     )
     embed.add_field(
         name="!ayuda",
-        value="Muestra este mensaje de ayuda",
+        value="Muestra este mensaje",
         inline=False
     )
     embed.add_field(
         name="!estado",
-        value="Muestra cuándo puedes enviar tu próximo replay",
+        value="Muestra tu estado de subidas",
         inline=False
     )
     embed.add_field(
         name="Subir replay",
-        value="Envía un archivo .SC2Replay al canal designado",
+        value="Envía un .SC2Replay a este canal",
         inline=False
     )
-    embed.set_footer(text="Límite: 1 replay cada 30 días por usuario")
     
     await ctx.author.send(embed=embed)
-    await ctx.message.delete()
+    try:
+        await ctx.message.delete()
+    except:
+        pass
 
 @bot.command(name='estado')
 async def estado(ctx):
-    """Muestra el estado de envíos del usuario"""
+    """Muestra el estado de subidas del usuario"""
     user_id = str(ctx.author.id)
     
     if user_id in user_clips:
@@ -198,53 +199,49 @@ async def estado(ctx):
         dias_restantes = 30 - (datetime.datetime.now(datetime.timezone.utc) - last_upload).days
         
         if dias_restantes > 0:
-            await enviar_respuesta_privada(
+            await enviar_respuesta(
                 ctx,
                 "⏳ Estado actual",
-                f"Podrás enviar tu próximo replay en {dias_restantes} días.",
+                f"Podrás subir otro replay en {dias_restantes} días.",
                 discord.Color.orange()
             )
         else:
-            await enviar_respuesta_privada(
+            await enviar_respuesta(
                 ctx,
-                "✅ Listo para enviar",
+                "✅ Listo para subir",
                 "Ya puedes enviar un nuevo replay.",
                 discord.Color.green()
             )
     else:
-        await enviar_respuesta_privada(
+        await enviar_respuesta(
             ctx,
-            "✅ Listo para enviar",
-            "Aún no has enviado ningún replay. ¡Puedes enviar uno ahora!",
+            "✅ Primer replay",
+            "Puedes subir tu primer replay cuando quieras!",
             discord.Color.green()
         )
 
-@bot.command(name='reset_user')
-@commands.has_permissions(administrator=True)
-async def reset_user(ctx, usuario: discord.Member):
-    """Resetea el contador de un usuario (Solo admins)"""
-    user_id = str(usuario.id)
+@bot.command(name='test')
+async def test(ctx):
+    """Comando de prueba"""
+    perms = ctx.channel.permissions_for(ctx.me)
     
-    if user_id in user_clips:
-        del user_clips[user_id]
-        guardar_datos()
-        await enviar_respuesta_privada(
-            ctx,
-            "🔄 Contador reseteado",
-            f"Has reseteado el contador para {usuario.display_name}",
-            discord.Color.blue()
-        )
-    else:
-        await enviar_respuesta_privada(
-            ctx,
-            "⚠️ Usuario no encontrado",
-            f"No se encontraron registros para {usuario.display_name}",
-            discord.Color.gold()
-        )
+    embed = discord.Embed(
+        title="✅ Prueba exitosa",
+        description="El bot está funcionando correctamente",
+        color=discord.Color.green()
+    )
+    embed.add_field(
+        name="Permisos en este canal",
+        value=f"Leer mensajes: {'✅' if perms.read_messages else '❌'}\n"
+              f"Enviar mensajes: {'✅' if perms.send_messages else '❌'}\n"
+              f"Ver historial: {'✅' if perms.read_message_history else '❌'}",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
 
 # Sistema keep-alive para Render
 def iniciar_servidor_web():
-    """Inicia un servidor web simple para mantener vivo el bot en Render"""
     try:
         from flask import Flask
         import threading
@@ -253,22 +250,25 @@ def iniciar_servidor_web():
         
         @app.route('/')
         def home():
-            return "Bot de Starcraft Clips en funcionamiento"
+            return "Bot de Starcraft en línea"
         
         @app.route('/health')
-        def health_check():
+        def health():
             return "OK", 200
-        
-        def run():
-            app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
-        
-        thread = threading.Thread(target=run)
+            
+        thread = threading.Thread(
+            target=lambda: app.run(
+                host='0.0.0.0',
+                port=8080,
+                debug=False,
+                use_reloader=False
+            )
+        )
         thread.daemon = True
         thread.start()
-        logger.info("Servidor web iniciado en el puerto 8080")
-        
+        logger.info("🔄 Servidor web iniciado en puerto 8080")
     except ImportError:
-        logger.warning("Flask no está instalado. El servidor web no se iniciará")
+        logger.warning("Flask no instalado. Servidor web no iniciado")
 
 # Iniciar servidor web si está en Render
 if 'RENDER' in os.environ:
@@ -279,29 +279,19 @@ if 'RENDER' in os.environ:
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
-    elif isinstance(error, commands.MissingPermissions):
-        await enviar_respuesta_privada(
-            ctx,
-            "⚠️ Permisos insuficientes",
-            "No tienes permisos para ejecutar este comando.",
-            discord.Color.red()
-        )
-    else:
-        logger.error(f"Error en comando {ctx.command}: {str(error)}")
-        await enviar_respuesta_privada(
-            ctx,
-            "❌ Error inesperado",
-            "Ocurrió un error al procesar el comando.",
-            discord.Color.red()
-        )
+    logger.error(f"Error en comando: {str(error)}")
+    await enviar_respuesta(
+        ctx,
+        "❌ Error",
+        f"Ocurrió un error: {str(error)}",
+        discord.Color.red()
+    )
 
-# Iniciar el bot
+# Inicio del bot
 try:
-    logger.info("Iniciando bot...")
+    logger.info("🚀 Iniciando bot...")
     bot.run(TOKEN)
-except discord.LoginFailure:
-    logger.error("Autenticación fallida. Verifica el token de Discord.")
 except Exception as e:
-    logger.error(f"Error fatal: {str(e)}")
+    logger.error(f"❌ Error fatal: {str(e)}")
 finally:
-    logger.info("Bot detenido")
+    logger.info("🔴 Bot detenido")
